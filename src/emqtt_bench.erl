@@ -308,6 +308,9 @@ main(pub, Opts) ->
                   "template://" ++ Path ->
                     {ok, Bin} = file:read_file(Path),
                     {template, Bin};
+                  "function://" ++ Path ->
+                    {ok, Fun} = file:script(Path),
+                    {function, Fun};
                   StrPayload ->
                     unicode:characters_to_binary(StrPayload)
               end,
@@ -893,6 +896,8 @@ publish(Client, Opts) ->
                         fun(Placeholder, Val, Acc) -> binary:replace(Acc, Placeholder, Val) end,
                         Bin,
                         Substitutions);
+                  {function, Fun} ->
+                      Fun(Opts);
                   _ ->
                       Payload0
               end,
