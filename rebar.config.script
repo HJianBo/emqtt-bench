@@ -20,6 +20,7 @@ IsQuicSupp = not (IsCentos6() orelse IsWin32() orelse
 Profiles = {profiles,[ {escript, []}
                      , {emqtt_bench,
                         [{relx, [ {release, {emqtt_bench, git}, [ kernel
+                                                                , compiler
                                                                 , stdlib
                                                                 , emqtt
                                                                 , getopt
