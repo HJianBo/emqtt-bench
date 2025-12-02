@@ -45,6 +45,11 @@
         "If --prefix is provided, the prefix is added otherwise "
         "client ID is the assigned sequence number.").
 
+-define(IDTABLE_DESC,
+        "The Client ID list file in csv format. "
+        "If provided, the client IDs will be read from the file with sequential number. "
+).
+
 %% common opts for conn, pub and sub.
 -define(COMMON_OPTS,
         [{help, undefined, "help", boolean,
@@ -67,6 +72,7 @@
           "local ipaddress or interface address"},
          {prefix, undefined, "prefix", string, ?PREFIX_DESC},
          {shortids, undefined, "shortids", {boolean, false}, ?SHORTIDS_DESC},
+         {idtable, undefined, "idtable", string, ?IDTABLE_DESC},
          {startnumber, $n, "startnumber", {integer, 0}, ?STARTNUMBER_DESC},
          {num_retry_connect, undefined, "num-retry-connect", {integer, 0},
           "number of times to retry estabilishing a connection before giving up"},
@@ -245,19 +251,22 @@
                     }).
 
 main(["sub"|Argv]) ->
-    {ok, {Opts, _Args}} = getopt:parse(?SUB_OPTS, Argv),
+    {ok, {Opts0, _Args}} = getopt:parse(?SUB_OPTS, Argv),
+    Opts = maybe_load_clientid_table(Opts0),
     ok = maybe_help(sub, Opts),
     ok = check_required_args(sub, [count, topic], Opts),
     main(sub, Opts);
 
 main(["pub"|Argv]) ->
-    {ok, {Opts, _Args}} = getopt:parse(?PUB_OPTS, Argv),
+    {ok, {Opts0, _Args}} = getopt:parse(?PUB_OPTS, Argv),
+    Opts = maybe_load_clientid_table(Opts0),
     ok = maybe_help(pub, Opts),
     ok = check_required_args(pub, [count], Opts),
     main(pub, Opts);
 
 main(["conn"|Argv]) ->
-    {ok, {Opts, _Args}} = getopt:parse(?CONN_OPTS, Argv),
+    {ok, {Opts0, _Args}} = getopt:parse(?CONN_OPTS, Argv),
+    Opts = maybe_load_clientid_table(Opts0),
     ok = maybe_help(conn, Opts),
     ok = check_required_args(conn, [count], Opts),
     main(conn, Opts);
@@ -274,6 +283,28 @@ maybe_help(PubSub, Opts) ->
             halt(0);
         _ -> ok
     end.
+
+maybe_load_clientid_table(Opts) ->
+    case proplists:get_value(idtable, Opts) of
+        undefined ->
+            Opts;
+        File ->
+            {ok, Csv} = file:read_file(File),
+            CsvLines = re:split(Csv, <<"\r\n|\n">>, []),
+            Count = insert_clientid_table(CsvLines, 0),
+            io:format("Loaded ~p client IDs from ~s~n", [Count, File]),
+            Fn = fun(N) -> persistent_term:get({clientid_table, N}, undefined) end,
+            lists:keyreplace(idtable, 1, Opts, {idtable, Fn})
+    end.
+
+insert_clientid_table([], N) ->
+    N;
+insert_clientid_table([<<>>| Rest], N) ->
+    insert_clientid_table(Rest, N);
+insert_clientid_table([ClientId| Rest], N) ->
+    New = N + 1,
+    persistent_term:put({clientid_table, New}, ClientId),
+    insert_clientid_table(Rest, New).
 
 check_required_args(PubSub, Keys, Opts) ->
     lists:foreach(fun(Key) ->
@@ -1105,8 +1136,19 @@ connect_fun(Opts)->
     end.
 
 client_id(PubSub, N, Opts) ->
-    Prefix = client_id_prefix(PubSub, Opts),
-    iolist_to_binary([Prefix, integer_to_list(N)]).
+    FixedClientId = case proplists:get_value(idtable, Opts) of
+        undefined ->
+            undefined;
+        Fun ->
+            Fun(N)
+    end,
+    case FixedClientId of
+        undefined ->
+            Prefix = client_id_prefix(PubSub, Opts),
+            iolist_to_binary([Prefix, integer_to_list(N)]);
+        ClientId ->
+            ClientId
+    end.
 
 client_id_prefix(PubSub, Opts) ->
     case {proplists:get_value(shortids, Opts), proplists:get_value(prefix, Opts)} of
