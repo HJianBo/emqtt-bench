@@ -204,6 +204,7 @@
           "Publish side must have the same option enabled in the same order. "
           "cnt64: Check the counter is strictly increasing. "
           "ts: publish latency counting, could be used for QoE tracking as well"
+          "function://path/to/function.erl: function to parse the timestamp from the payload"
          },
          {qos, $q, "qos", {integer, 0},
           "subscribe qos"}
@@ -1444,7 +1445,15 @@ maybe_check_payload_hdrs(_, {template, _Bin}, _) ->
     ok;
 maybe_check_payload_hdrs(_, _Bin, []) ->
    ok;
-maybe_check_payload_hdrs(Prometheus, << TS:64/integer, BinL/binary >>, [?hdr_ts | RL]) ->
+maybe_check_payload_hdrs(Prometheus, Bin, [Hdr]) when is_function(Hdr) ->
+   TS = Hdr(Bin),
+   E2ELatency = os:system_time(millisecond) - TS,
+   %% publish_latency counter is global, only update it when > 0
+   E2ELatency > 0 andalso inc_counter(Prometheus, publish_latency, E2ELatency),
+   histogram_observe(Prometheus, e2e_latency, E2ELatency),
+   is_qoe_dlog() andalso pub_qoe(E2ELatency),
+   ok;
+maybe_check_payload_hdrs(Prometheus, <<TS:64/integer, BinL/binary >>, [?hdr_ts | RL]) ->
    E2ELatency = os:system_time(millisecond) - TS,
    %% publish_latency counter is global, only update it when > 0
    E2ELatency > 0 andalso inc_counter(Prometheus, publish_latency, E2ELatency),
@@ -1484,20 +1493,26 @@ prefix_payload_headers([?hdr_cnt64 | T], Bin, AccHeaderBin) ->
 
 -spec parse_payload_hdrs(proplists:proplist()) -> [string()].
 parse_payload_hdrs(Opts)->
-   Res = string:tokens(proplists:get_value(payload_hdrs, Opts, []), ","),
-   ok = validate_payload_hdrs(Res),
-   Res.
+    Res = string:tokens(proplists:get_value(payload_hdrs, Opts, []), ","),
+    case Res of
+        ["function://" ++ File] ->
+            {ok, Fun} = file:script(File),
+            [Fun];
+        _ ->
+            ok = validate_payload_hdrs(Res),
+            Res
+   end.
 
 -spec validate_payload_hdrs([string()]) -> ok | no_return().
 validate_payload_hdrs([]) ->
-   ok;
+    ok;
 validate_payload_hdrs([Hdr | T]) ->
-   case lists:member(Hdr, [?hdr_cnt64, ?hdr_ts]) of
-      true ->
-         validate_payload_hdrs(T);
-      false ->
+    case lists:member(Hdr, [?hdr_cnt64, ?hdr_ts]) of
+       true ->
+          validate_payload_hdrs(T);
+       false ->
          error({unsupp_payload_hdr, Hdr})
-   end.
+    end.
 
 maybe_start_restapi(disabled) ->
     ok;
