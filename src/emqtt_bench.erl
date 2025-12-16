@@ -755,9 +755,15 @@ loop(Parent, N, Client, PubSub, Opts) ->
                     Parent ! publish_complete,
                     exit(normal)
             end;
-        {publish, #{payload := Payload}} ->
+        {publish, #{payload := Payload} = Msg} ->
             inc_counter(Prometheus, recv),
-            maybe_check_payload_hdrs(Prometheus, Payload, proplists:get_value(payload_hdrs, Opts, [])),
+            Hdrs = proplists:get_value(payload_hdrs, Opts, []),
+            case Hdrs of
+                [Fun] when is_function(Fun) ->
+                    call_payload_hdr_function(Prometheus, Client, Opts, Msg, Fun);
+                _ ->
+                    maybe_check_payload_hdrs(Prometheus, Payload, Hdrs)
+            end,
             loop(Parent, N, Client, PubSub, Opts);
         {publish, TopicName} = Trigger when is_binary(TopicName) ->
             TopicSpec = maps:get(TopicName, proplists:get_value(topics_payload, Opts)),
@@ -1445,14 +1451,6 @@ maybe_check_payload_hdrs(_, {template, _Bin}, _) ->
     ok;
 maybe_check_payload_hdrs(_, _Bin, []) ->
    ok;
-maybe_check_payload_hdrs(Prometheus, Bin, [Hdr]) when is_function(Hdr) ->
-   TS = Hdr(Bin),
-   E2ELatency = os:system_time(millisecond) - TS,
-   %% publish_latency counter is global, only update it when > 0
-   E2ELatency > 0 andalso inc_counter(Prometheus, publish_latency, E2ELatency),
-   histogram_observe(Prometheus, e2e_latency, E2ELatency),
-   is_qoe_dlog() andalso pub_qoe(E2ELatency),
-   ok;
 maybe_check_payload_hdrs(Prometheus, <<TS:64/integer, BinL/binary >>, [?hdr_ts | RL]) ->
    E2ELatency = os:system_time(millisecond) - TS,
    %% publish_latency counter is global, only update it when > 0
@@ -1469,6 +1467,15 @@ maybe_check_payload_hdrs(Prometheus, << Cnt:64/integer, BinL/binary >>, [?hdr_cn
       Old ->
          throw({err_payload_hdr_cnt64, Old, Cnt})
    end.
+
+call_payload_hdr_function(Prometheus, Client, Opts, Msg, Fun) ->
+   TS = Fun(Client, Opts, Msg),
+   E2ELatency = os:system_time(millisecond) - TS,
+   %% publish_latency counter is global, only update it when > 0
+   E2ELatency > 0 andalso inc_counter(Prometheus, publish_latency, E2ELatency),
+   histogram_observe(Prometheus, e2e_latency, E2ELatency),
+   is_qoe_dlog() andalso pub_qoe(E2ELatency),
+   ok.
 
 -spec with_payload_headers([string()], binary()) -> binary().
 with_payload_headers([], Bin) ->
